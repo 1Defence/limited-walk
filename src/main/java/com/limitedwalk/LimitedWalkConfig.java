@@ -29,7 +29,6 @@ import net.runelite.client.config.Config;
 import net.runelite.client.config.ConfigGroup;
 import net.runelite.client.config.ConfigItem;
 import net.runelite.client.config.Keybind;
-import net.runelite.client.config.Range;
 
 import java.awt.*;
 
@@ -63,9 +62,17 @@ public interface LimitedWalkConfig extends Config
 	)
 	default boolean allowTraversal() { return false; }
 
+	@ConfigItem(
+			keyName = "allowMinimapClick",
+			name = "Allow Minimap Click",
+			description = "Allows clicking on the minimap while on a limited tile",
+			position = 4
+	)
+	default boolean allowMinimapClick() { return false; }
+
 	@Alpha
 	@ConfigItem(
-			position = 4,
+			position = 5,
 			keyName = "tileOutlineColor",
 			name = "Tile outline color",
 			description = "Outline color of the limited tile (0 opacity to disable)"
@@ -77,7 +84,7 @@ public interface LimitedWalkConfig extends Config
 
 	@Alpha
 	@ConfigItem(
-			position = 5,
+			position = 6,
 			keyName = "tileFillColor",
 			name = "Tile fill color",
 			description = "Fill color of the limited tile (0 opacity to disable)"
@@ -86,9 +93,9 @@ public interface LimitedWalkConfig extends Config
 	{
 		return new Color(255,255,255,25);
 	}
-	@Range(min = 0, max = 8)
+
 	@ConfigItem(
-			position = 6,
+			position = 7,
 			keyName = "borderWidth",
 			name = "Border Width",
 			description = "Width of the limited tile border"

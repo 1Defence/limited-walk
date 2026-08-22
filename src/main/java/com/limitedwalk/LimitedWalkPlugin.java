@@ -39,13 +39,17 @@ import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
 import net.runelite.api.MenuAction;
+import net.runelite.api.Player;
 import net.runelite.api.Tile;
 import net.runelite.api.WorldView;
 import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.events.GameStateChanged;
+import net.runelite.api.events.GameTick;
 import net.runelite.api.events.MenuEntryAdded;
 import net.runelite.api.events.MenuOptionClicked;
+import net.runelite.api.events.WidgetLoaded;
+import net.runelite.api.widgets.Widget;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ConfigChanged;
@@ -54,19 +58,25 @@ import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.ui.overlay.OverlayManager;
 import net.runelite.client.util.HotkeyListener;
+
+import java.awt.*;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.stream.Collectors;
+import net.runelite.client.input.MouseListener;
+import net.runelite.client.input.MouseManager;
+
+import java.awt.event.MouseEvent;
 
 @Slf4j
 @PluginDescriptor(
         name = "Limited Walk",
         description = "Forces shift click to walk when on user-set tiles.",
-        tags = {"walk", "limited", "alting"}
+        tags = {"walk", "limited", "alting","tile"}
 )
-public class LimitedWalkPlugin extends Plugin
+public class LimitedWalkPlugin extends Plugin implements MouseListener
 {
     @Inject
     private Client client;
@@ -89,12 +99,21 @@ public class LimitedWalkPlugin extends Plugin
     @Inject
     private TileOverlay overlay;
 
+    @Inject
+    private MouseManager mouseManager;
+
     boolean limited = true;
 
-    boolean configClickUnder,configAllowTraversal;
+    boolean configClickUnder,configAllowTraversal,configAllowMinimapClick;
 
     @Getter(AccessLevel.PACKAGE)
     private final List<WorldPoint> limitedPoints = new ArrayList<>();
+    WorldPoint localPlayerWorldPoint = null;
+    Widget minimapWidget = null;
+
+    boolean resizedMode = false;
+
+    volatile boolean minimapHidden = false;
 
     private final HotkeyListener hotkeyListener = new HotkeyListener(() -> config.hotkeyToggle())
     {
@@ -118,18 +137,22 @@ public class LimitedWalkPlugin extends Plugin
         limited = true;
         keyManager.registerKeyListener(hotkeyListener);
         overlayManager.add(overlay);
+        GetMiniMapWidget();
+        mouseManager.registerMouseListener(this);
     }
 
     @Override
     protected void shutDown() throws Exception
     {
         keyManager.unregisterKeyListener(hotkeyListener);
+        mouseManager.unregisterMouseListener(this);
         overlayManager.remove(overlay);
     }
 
     public void CacheConfigs(){
         configClickUnder = config.clickUnder();
         configAllowTraversal = config.allowTraversal();
+        configAllowMinimapClick = config.allowMinimapClick();
         overlay.updateConfigs();
     }
 
@@ -259,53 +282,123 @@ public class LimitedWalkPlugin extends Plugin
 
         if (event.getMenuOption().contains("Walk here"))
         {
-            final Tile tile = client.getSelectedSceneTile();
-            if (tile == null)
-            {
-                return;
-            }
-
-            WorldPoint localPlayerWorldPoint = client.getLocalPlayer().getWorldLocation();
-
-            if(localPlayerWorldPoint == null)
-                return;
-
-            WorldView wv = client.getTopLevelWorldView();
-            if(wv == null)
-                return;
-
-            LocalPoint playerLP = LocalPoint.fromWorld(wv,localPlayerWorldPoint);
-            if(playerLP == null)
-                return;
-
-            final WorldPoint localPlayerPointInstance = WorldPoint.fromLocalInstance(client, playerLP);
-
-            final int regionId = localPlayerPointInstance.getRegionID();
-            final LimitedTile playerTile = new LimitedTile(regionId, localPlayerPointInstance.getRegionX(), localPlayerPointInstance.getRegionY(), localPlayerPointInstance.getPlane());
-
-            Collection<LimitedTile> limitedTiles = getLimitedTiles(regionId);
-            if (limitedTiles.contains(playerTile))
-            {
-                //player is standing on a limited tile.
-                final WorldPoint clickedWorldPoint = WorldPoint.fromLocalInstance(client, tile.getLocalLocation());
-                final LimitedTile clickedTile = new LimitedTile(regionId, clickedWorldPoint.getRegionX(), clickedWorldPoint.getRegionY(), clickedWorldPoint.getPlane());
-
-                boolean clickedUnder = clickedTile.equals(playerTile);
-
-                if(clickedUnder){
-                    //allow walk here if tile player presently on
-                    if(configClickUnder)
-                        return;
-                }else{
-                    //allow walk here if it's another limited tile only.
-                    if(configAllowTraversal && limitedTiles.contains(clickedTile))
-                        return;
-                }
-
-                //prevent the event
+            if(shouldConsume(true)){
                 event.consume();
             }
         }
+    }
+
+    /**
+     * Store local player loc / minimap visibility status for parsing in click
+     * Needed as these checks would otherwise have to happen on the client thread
+     */
+    @Subscribe
+    public void onGameTick(GameTick gameTick){
+        if(minimapWidget != null){
+            minimapHidden = minimapWidget.isHidden();
+        }
+
+        Player localPlayer = client.getLocalPlayer();
+        if(localPlayer == null)
+            return;
+
+        localPlayerWorldPoint = localPlayer.getWorldLocation();
+    }
+
+    /**
+     * Gets minimap widget on load
+     */
+    @Subscribe
+    public void onWidgetLoaded(WidgetLoaded e){
+        switch (e.getGroupId()){
+            case 548:
+                minimapWidget = client.getWidget(548,22);
+                resizedMode = false;
+                return;
+            case 161:
+                minimapWidget = client.getWidget(161,30);
+                resizedMode = true;
+                return;
+            case 164:
+                minimapWidget = client.getWidget(164,30);
+                resizedMode = true;
+        }
+    }
+
+    /**
+     * Gets/sets minimap widget dependant on client type (resize/fixed)
+     */
+    void GetMiniMapWidget(){
+        Widget fixedMap = client.getWidget(548,22);
+        if(fixedMap != null){
+            minimapWidget = fixedMap;
+            resizedMode = false;
+        }else{
+            Widget resizeableClassicMap = client.getWidget(161,30);
+            if(resizeableClassicMap != null){
+                minimapWidget = resizeableClassicMap;
+                resizedMode = true;
+            }else{
+                Widget resizeableModernMap = client.getWidget(164,30);
+                if(resizeableModernMap != null){
+                    minimapWidget = resizeableModernMap;
+                    resizedMode = true;
+                }
+            }
+        }
+    }
+
+    boolean shouldConsume(boolean checkTraversal){
+        if(localPlayerWorldPoint == null)
+            return false;
+
+        WorldView wv = client.getTopLevelWorldView();
+        if(wv == null)
+            return false;
+
+        LocalPoint playerLP = LocalPoint.fromWorld(wv,localPlayerWorldPoint);
+        if(playerLP == null)
+            return false;
+
+        final WorldPoint localPlayerPointInstance = WorldPoint.fromLocalInstance(client, playerLP);
+
+        final int regionId = localPlayerPointInstance.getRegionID();
+        final LimitedTile playerTile = new LimitedTile(regionId, localPlayerPointInstance.getRegionX(), localPlayerPointInstance.getRegionY(), localPlayerPointInstance.getPlane());
+
+        Collection<LimitedTile> limitedTiles = getLimitedTiles(regionId);
+        if (limitedTiles.contains(playerTile))
+        {
+            //player is standing on a limited tile.
+            if(!checkTraversal){
+                //early return, not checking other traversal tiles
+                return true;
+            }
+
+            final Tile tile = client.getSelectedSceneTile();
+            if (tile == null)
+            {
+                return false;
+            }
+
+            final WorldPoint clickedWorldPoint = WorldPoint.fromLocalInstance(client, tile.getLocalLocation());
+            final LimitedTile clickedTile = new LimitedTile(regionId, clickedWorldPoint.getRegionX(), clickedWorldPoint.getRegionY(), clickedWorldPoint.getPlane());
+
+            boolean clickedUnder = clickedTile.equals(playerTile);
+
+            if(clickedUnder){
+                //allow walk here if tile player presently on
+                if(configClickUnder)
+                    return false;
+            }else{
+                //allow walk here if it's another limited tile only.
+                if(configAllowTraversal && limitedTiles.contains(clickedTile))
+                    return false;
+            }
+
+            //prevent the event
+            return true;
+        }
+        return false;
     }
 
 
@@ -332,6 +425,91 @@ public class LimitedWalkPlugin extends Plugin
         saveTiles(regionId, tiles);
 
         loadTiles();
+    }
+
+    /**
+     * Consumes the click if its over the minimap
+     */
+    @Override
+    public MouseEvent mousePressed(MouseEvent e)
+    {
+        if(configAllowMinimapClick)
+            return e;
+
+        if(minimapWidget == null)
+            return e;
+
+        //dont intercept clicks if minimap is hidden via other plugins..
+        if(minimapHidden)
+            return e;
+
+        //allow clicks when shift held
+        if(!limited)
+            return e;
+
+        //allows right clicked ops that end up over the minimap
+        if(client.isMenuOpen()){
+            return e;
+        }
+
+        Rectangle rectBounds = minimapWidget.getBounds();
+
+        if(resizedMode)
+        {
+            double dx = e.getX() - rectBounds.getCenterX();
+            double dy = e.getY() - rectBounds.getCenterY();
+            double rx = rectBounds.getWidth() / 2.0 + 1;
+            double ry = rectBounds.getHeight() / 2.0 + 1;
+            boolean withinCircularBounds = (dx * dx) / (rx * rx) + (dy * dy) / (ry * ry) <= 1.0;
+            if(withinCircularBounds){
+                if(shouldConsume(false))
+                    e.consume();
+            }
+        }else{
+            Rectangle inclusiveBounds = new Rectangle(rectBounds.x, rectBounds.y, rectBounds.width + 1, rectBounds.height + 1);
+            if (inclusiveBounds.contains(e.getPoint()))
+            {
+                if(shouldConsume(false))
+                    e.consume();
+            }
+        }
+        return e;
+    }
+
+    @Override
+    public MouseEvent mouseClicked(MouseEvent e)
+    {
+        return e;
+    }
+
+    @Override
+    public MouseEvent mouseReleased(MouseEvent e)
+    {
+        return e;
+    }
+
+    @Override
+    public MouseEvent mouseEntered(MouseEvent e)
+    {
+        return e;
+    }
+
+    @Override
+    public MouseEvent mouseExited(MouseEvent e)
+    {
+        return e;
+    }
+
+    @Override
+    public MouseEvent mouseDragged(MouseEvent e)
+    {
+        return e;
+    }
+
+    @Override
+    public MouseEvent mouseMoved(MouseEvent e)
+    {
+        return e;
     }
 
 }
