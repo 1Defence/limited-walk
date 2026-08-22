@@ -39,6 +39,7 @@ import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
 import net.runelite.api.MenuAction;
+import net.runelite.api.MenuEntry;
 import net.runelite.api.Player;
 import net.runelite.api.Tile;
 import net.runelite.api.WorldView;
@@ -449,6 +450,12 @@ public class LimitedWalkPlugin extends Plugin implements MouseListener
 
         //allows right clicked ops that end up over the minimap
         if(client.isMenuOpen()){
+            return e;
+        }
+
+        //more than the default cancel op, probably an orb option but incase same frame movement still ignore walk here.
+        MenuEntry[] menuEntries = client.getMenuEntries();
+        if(menuEntries.length > 1 && !menuEntries[menuEntries.length-1].getOption().equals("Walk here")){
             return e;
         }
 
